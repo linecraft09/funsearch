@@ -1,5 +1,7 @@
 import json
 import multiprocessing
+import os
+from datetime import datetime
 from typing import Collection, Any
 import http.client
 from implementation import funsearch
@@ -60,11 +62,29 @@ class LLMAPI(sampler.LLM):
 
     def __init__(self, samples_per_prompt: int, trim=True):
         super().__init__(samples_per_prompt)
-        additional_prompt = ('Complete a different and more complex Python function. '
-                             'Be creative and you can insert multiple if-else and for-loop in the code logic.'
-                             'Only output the Python code, no descriptions.')
+        additional_prompt = ('You are developing and enhancing a part of a Python Function. Specifically the online bin packing problem.'
+                             'The code you are seeing was a version of the Heurisitic Function that helps determine which bin has a higher'
+                             ' priority for each incoming item. As a heuristic expert, analyze the code '
+                             ' based on the score you are seeing (negative the number of bins used, we consider bins used if there is at least some items inside the bin,' \
+                             ' for example a score of -500.0 means that 500 bins are used. -10 means that only 10 bins are used. The bigger the better.)'
+                             ' and the average fullness of the bin (for example, the number 0.2 suggests that of all the bins used, only 20% filled.)'
+                             ' The goal is to maximize the score (closer to 0) and maximize the average fullness of the bin (closer to 1).'
+                             ' A good heuristic should allow maximum average fullness of the bins with minimal usage of number of bins. Your analysis should'
+                             ' output the enhanced Python code with no descriptions.')
+        # additional_prompt = ('Complete a different and more complex Python function. '
+        #                      'Be creative and you can insert multiple if-else and for-loop in the code logic.'
+        #                      'Only output the Python code, no descriptions.')
         self._additional_prompt = additional_prompt
         self._trim = trim
+        # Create a per-run log file in the same directory as this script.
+        # Filename format: YYYYMMDD-HHiiss.txt. Open/appends will be used
+        # when writing prompts/responses.
+        try:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+        except Exception:
+            base_dir = os.getcwd()
+        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        self._log_path = os.path.join(base_dir, f"{timestamp}.txt")
 
     def draw_samples(self, prompt: str) -> Collection[str]:
         """Returns multiple predicted continuations of `prompt`."""
@@ -74,30 +94,48 @@ class LLMAPI(sampler.LLM):
         prompt = '\n'.join([content, self._additional_prompt])
         while True:
             try:
-                conn = http.client.HTTPSConnection("api.chatanywhere.com.cn")
+                conn = http.client.HTTPSConnection(host="", port="")
                 payload = json.dumps({
-                    "max_tokens": 512,
-                    "model": "gpt-3.5-turbo",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ]
+                    # "max_tokens": 2048,
+                    "model": "gemma3:12b-it-qat",
+                    "stream": False,
+                    "prompt": prompt,
+                    "think": False,
+                    "options": {
+                        "temperature": 0.2
+                    }
+                    # "messages": [
+                    #     {
+                    #         "role": "user",
+                    #         "content": prompt
+                    #     }
+                    # ]
                 })
                 headers = {
-                    'Authorization': 'Bearer sk-ys02zx......(replace with your own)......',
-                    'User-Agent': 'Apifox/1.0.0 (https://apifox.com)',
                     'Content-Type': 'application/json'
                 }
-                conn.request("POST", "/v1/chat/completions", payload, headers)
+                conn.request("POST", "/api/generate", payload, headers)
                 res = conn.getresponse()
                 data = res.read().decode("utf-8")
                 data = json.loads(data)
-                response = data['choices'][0]['message']['content']
+                # response = data['message']['content']
+                response = data['response']
                 # trim function
                 if self._trim:
                     response = _trim_preface_of_body(response)
+                # Append prompt and response to the per-run log file.
+                try:
+                    with open(self._log_path, 'a', encoding='utf-8') as lf:
+                        lf.write('-----\n')
+                        lf.write(f'TIMESTAMP: {datetime.now().isoformat()}\n')
+                        lf.write('PROMPT:\n')
+                        lf.write(prompt + '\n\n')
+                        lf.write('RESPONSE:\n')
+                        lf.write(response + '\n')
+                        lf.write('-----\n\n')
+                except Exception:
+                    # Logging must not break LLM interaction; ignore failures.
+                    pass
                 return response
             except Exception:
                 continue
@@ -226,12 +264,16 @@ def online_binpack(
     packing = [bin_items for bin_items in packing if bin_items]
     return packing, bins
 
-
 @funsearch.run
+# Instances is the different testing dataset inside the specific testing data
 def evaluate(instances: dict) -> float:
     """Evaluate heuristic function on a set of online binpacking instances."""
     # List storing number of bins used for each instance.
     num_bins = []
+
+    # List to keep track of average fullness of closed bin for each dataset / instance
+    avg_fullness_list = []
+
     # Perform online binpacking for each instance.
     for name in instances:
         instance = instances[name]
@@ -245,11 +287,30 @@ def evaluate(instances: dict) -> float:
         _, bins_packed = online_binpack(items, bins)
         # If remaining capacity in a bin is equal to initial capacity, then it is
         # unused. Count number of used bins.
-        num_bins.append((bins_packed != capacity).sum())
-    # Score of heuristic function is negative of average number of bins used
-    # across instances (as we want to minimize number of bins).
-    return -np.mean(num_bins)
 
+        # If the bins aren't at their 100%, count them as used
+        # Essentially, if this number is very low and minimized, it is great
+        num_bins.append((bins_packed != capacity).sum())
+
+        # Average fullness of the bins inside the instance
+        closed_bins = bins_packed[bins_packed < capacity]
+        # If there exists such closed bin
+        if len(closed_bins) > 0:
+            fullness = (capacity - closed_bins) / capacity
+            avg_fullness = np.mean(fullness)
+            avg_fullness_list.append(avg_fullness)
+            
+    # Minimize such value so that closer to 0 from a negative number
+    # yields a better result
+    avg_num_bins = np.mean(num_bins)
+
+    # Takes the average of fullness list (gathered from all instances)
+    avg_fullness_overall = np.mean(avg_fullness_list) if avg_fullness_list else 0.0
+
+    print(f"[Evaluator Result] Average Number of bins used: {avg_num_bins}")
+    print(f"[Evaluator Result] Average fullness of closed bins: {avg_fullness_overall:.4f}")
+
+    return [-avg_num_bins, avg_fullness_overall]
 
 @funsearch.evolve
 def priority(item: float, bins: np.ndarray) -> np.ndarray:
@@ -275,7 +336,7 @@ if __name__ == '__main__':
     config = config.Config(samples_per_prompt=4, evaluate_timeout_seconds=30)
 
     bin_packing_or3 = {'OR3': bin_packing_utils.datasets['OR3']}
-    global_max_sample_num = 10  # if it is set to None, funsearch will execute an endless loop
+    global_max_sample_num = None  # if it is set to None, funsearch will execute an endless loop
     funsearch.main(
         specification=specification,
         inputs=bin_packing_or3,
