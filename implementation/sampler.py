@@ -111,8 +111,12 @@ class Sampler:
                         global_sample_nums=cur_global_sample_nums,
                         sample_time=sample_time
                     )
-            except:
-                continue
+            except Exception as e:
+                # Do not swallow errors here. If the LLM or other component fails
+                # in a way that raises an exception we want the process to stop so
+                # the failure is visible and can be handled by the caller/user.
+                print(f"Sampler.exception: {e}")
+                raise
 
     def _get_global_sample_nums(self) -> int:
         return self.__class__._global_samples_nums

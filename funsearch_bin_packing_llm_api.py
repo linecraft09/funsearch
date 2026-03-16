@@ -2,6 +2,9 @@ import json
 import multiprocessing
 from typing import Collection, Any
 import http.client
+import time
+import os
+import requests
 from implementation import funsearch
 from implementation import config
 from implementation import sampler
@@ -72,35 +75,50 @@ class LLMAPI(sampler.LLM):
 
     def _draw_sample(self, content: str) -> str:
         prompt = '\n'.join([content, self._additional_prompt])
-        while True:
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
             try:
-                conn = http.client.HTTPSConnection("api.chatanywhere.com.cn")
-                payload = json.dumps({
+                url = "https://router.huggingface.co/v1/chat/completions"
+                hf_token = os.environ.get('HF_TOKEN') or 'token here'
+                hf_model = os.environ.get('HF_MODEL') or 'meta-llama/Llama-3.3-70B-Instruct'
+
+                payload = {
                     "max_tokens": 512,
-                    "model": "gpt-3.5-turbo",
+                    "model": hf_model,
                     "messages": [
                         {
                             "role": "user",
                             "content": prompt
                         }
                     ]
-                })
+                }
                 headers = {
-                    'Authorization': 'Bearer sk-ys02zx......(replace with your own)......',
+                    'Authorization': f'Bearer {hf_token}',
                     'User-Agent': 'Apifox/1.0.0 (https://apifox.com)',
                     'Content-Type': 'application/json'
                 }
-                conn.request("POST", "/v1/chat/completions", payload, headers)
-                res = conn.getresponse()
-                data = res.read().decode("utf-8")
-                data = json.loads(data)
+
+                resp = requests.post(url, headers=headers, json=payload, timeout=30)
+                try:
+                    resp.raise_for_status()
+                except requests.HTTPError:
+                    # Print response body for debugging (e.g., 410 Gone with details)
+                    print(f"LLMAPI HTTP {resp.status_code}: {resp.text}")
+                    raise
+                data = resp.json()
                 response = data['choices'][0]['message']['content']
+
                 # trim function
                 if self._trim:
                     response = _trim_preface_of_body(response)
                 return response
-            except Exception:
-                continue
+            except Exception as e:
+                # Log the real exception and retry after a short pause
+                print(f"LLMAPI._draw_sample attempt {attempt} exception: {e}")
+                if attempt == max_attempts:
+                    # Stop retrying and raise so upstream can handle the failure.
+                    raise RuntimeError(f"LLMAPI._draw_sample failed after {max_attempts} attempts") from e
+                time.sleep(2)
 
 
 class Sandbox(evaluator.Sandbox):
