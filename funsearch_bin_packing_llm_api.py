@@ -1,6 +1,8 @@
 import json
 import multiprocessing
 import os
+
+from dotenv import load_dotenv
 from datetime import datetime
 from typing import Collection, Any
 import http.client
@@ -18,6 +20,7 @@ from typing import Collection, Any
 import http.client
 from implementation import sampler
 
+load_dotenv()
 
 def _trim_preface_of_body(sample: str) -> str:
     """Trim the redundant descriptions/symbols/'def' declaration before the function body.
@@ -62,19 +65,9 @@ class LLMAPI(sampler.LLM):
 
     def __init__(self, samples_per_prompt: int, trim=True):
         super().__init__(samples_per_prompt)
-        additional_prompt = ('You are developing and enhancing a part of a Python Function. Specifically the online bin packing problem.'
-                             'The code you are seeing was a version of the Heurisitic Function that helps determine which bin has a higher'
-                             ' priority for each incoming item. As a heuristic expert, analyze the code '
-                             ' based on the score you are seeing (negative the number of bins used, we consider bins used if there is at least some items inside the bin,' \
-                             ' for example a score of -500.0 means that 500 bins are used. -10 means that only 10 bins are used. The bigger the better.)'
-                             ' and the average fullness of the bin (for example, the number 0.2 suggests that of all the bins used, only 20% filled.)'
-                             ' The goal is to maximize the score (closer to 0) and maximize the average fullness of the bin (closer to 1).'
-                             ' A good heuristic should allow maximum average fullness of the bins with minimal usage of number of bins. Your analysis should'
-                             ' output the enhanced Python code with no descriptions.')
-        # additional_prompt = ('Complete a different and more complex Python function. '
-        #                      'Be creative and you can insert multiple if-else and for-loop in the code logic.'
-        #                      'Only output the Python code, no descriptions.')
-        self._additional_prompt = additional_prompt
+        # Adrian: The additional prompt has been taken away since the ProgramDatabase will deliver
+        # the narrative feedback.
+        self._additional_prompt = ""
         self._trim = trim
         # Create a per-run log file in the same directory as this script.
         # Filename format: YYYYMMDD-HHiiss.txt. Open/appends will be used
@@ -91,25 +84,16 @@ class LLMAPI(sampler.LLM):
         return [self._draw_sample(prompt) for _ in range(self._samples_per_prompt)]
 
     def _draw_sample(self, content: str) -> str:
-        prompt = '\n'.join([content, self._additional_prompt])
+        # Additional prompts are no longer needed.
+        prompt = content
         while True:
             try:
-                conn = http.client.HTTPSConnection(host="", port="")
+                conn = http.client.HTTPSConnection(host=os.getenv("ANALYST_LLM_ENDPOINT_HOST"), port=int(os.getenv("ANALYST_LLM_ENDPOINT_PORT")))
                 payload = json.dumps({
-                    # "max_tokens": 2048,
-                    "model": "gemma3:12b-it-qat",
+                    "model": "qwen3-coder:30b",
                     "stream": False,
                     "prompt": prompt,
                     "think": False,
-                    "options": {
-                        "temperature": 0.2
-                    }
-                    # "messages": [
-                    #     {
-                    #         "role": "user",
-                    #         "content": prompt
-                    #     }
-                    # ]
                 })
                 headers = {
                     'Content-Type': 'application/json'
@@ -118,7 +102,6 @@ class LLMAPI(sampler.LLM):
                 res = conn.getresponse()
                 data = res.read().decode("utf-8")
                 data = json.loads(data)
-                # response = data['message']['content']
                 response = data['response']
                 # trim function
                 if self._trim:
@@ -225,7 +208,14 @@ class Sandbox(evaluator.Sandbox):
             function_to_run = all_globals_namespace[function_to_run]
             # return the execution results
             results = function_to_run(dataset)
-            # the results must be int or float
+            # The results can be numeric score or metric dict with a primary score.
+            if isinstance(results, dict):
+                if 'primary' not in results or not isinstance(results['primary'], (int, float)):
+                    result_queue.put((None, False))
+                    return
+                result_queue.put((results, True))
+                return
+
             if not isinstance(results, (int, float)):
                 result_queue.put((None, False))
                 return
@@ -266,13 +256,41 @@ def online_binpack(
 
 @funsearch.run
 # Instances is the different testing dataset inside the specific testing data
-def evaluate(instances: dict) -> float:
+def evaluate(instances: dict) -> dict:
+    
+    """
+    Adrian:
+    - Modified this function to return more information about the evaluation process.
+    - Previously, this function only returns the negative average number of bins used across all instances.
+    - This score is only evaluated but is not used for the evolution of the Heuristic. LLM does not receive
+      any information about how well the heuristic has performed in previous iterations.
+    - As such, I have modified this function to give the following information (average score across all instance):
+      1) Primary Score (unit: bins): Negative Average Number of Bins used (the original score value)
+      2) Average Number of Bins used (unit: bins): The same as 1) but a positive number
+      3) Average Fullness of Bins (unit: %): The average fullness of the bins used in percentage.
+      4) Average units of Wasted Space (unit: bins): The average remaining capacity of the bins used.
+      5) Standard Deviation of Wasted Space (unit: bins): The standard deviation of the remaining capacity of the bins used.
+      6) Percentage of Nearly Full Bins (unit: %): The percentage of bins
+    """
+
     """Evaluate heuristic function on a set of online binpacking instances."""
     # List storing number of bins used for each instance.
     num_bins = []
 
     # List to keep track of average fullness of closed bin for each dataset / instance
     avg_fullness_list = []
+
+    # Wasted space distribution metrics (remaining capacity of used bins)
+    avg_wasted_space_list = []   # mean remaining capacity per used bin
+    wasted_space_std_list = []   # stdev of remaining capacity across used bins
+    pct_nearly_full_list = []    # fraction of used bins with <10% capacity remaining
+
+    # For better undestanding:
+    # avg_wasted_space_list = [27, 25, 24]
+    # wasteds_space_std_list = [5, 4, 2]
+    # pct_nearly_full_list = [0.1, 0.15, 0.2]
+    # These three arrays should have the same length, with their index denoting the result of each instance.
+    # 1st instance, average wasted space is 27, with standard deviation of 5 and the percentage of nearly full bins is 10%.
 
     # Perform online binpacking for each instance.
     for name in instances:
@@ -292,14 +310,44 @@ def evaluate(instances: dict) -> float:
         # Essentially, if this number is very low and minimized, it is great
         num_bins.append((bins_packed != capacity).sum())
 
-        # Average fullness of the bins inside the instance
-        closed_bins = bins_packed[bins_packed < capacity]
-        # If there exists such closed bin
-        if len(closed_bins) > 0:
-            fullness = (capacity - closed_bins) / capacity
-            avg_fullness = np.mean(fullness)
-            avg_fullness_list.append(avg_fullness)
-            
+        # used_bins: remaining capacity of each used bin (this is the wasted space per bin)
+        used_bins = bins_packed[bins_packed < capacity]
+        
+        # Better picture: if there is only 5 bins with the following:
+        # used_bins = [0, 12, 37, 5, 21] then it means there are 5 bins used where it
+        # at least has some items inside. 0 means it is full, 12 means it has 12 units left, etc.
+        
+        # Given that at least some bins are used
+        if len(used_bins) > 0:
+        
+            # Fullness: fraction of capacity actually filled
+            fullness = (capacity - used_bins) / capacity
+            # If the capcity for each bin is 100, if a bin has 12 units remaining
+            # then (100-12) / 100 = 0.88, so the fullness is 88%.
+
+            # We then append the average fullness of all the used bins
+            # in this test instance.
+            avg_fullness_list.append(np.mean(fullness))
+
+            # Wasted space distribution: remaining capacity of used bins
+            wasted = used_bins.astype(float)
+
+            # Previously we took the mean of the fullness in percentage.
+            # Here, we take the mean of the wasted space.
+            # Such that we know, on average, how many units is wasted in this instance.
+            avg_wasted_space_list.append(np.mean(wasted))
+
+            # Finally, we take the standard deviation of the wasted capacity as an array.
+            # This value will tell us how widely spreaded the wasted space is.
+            wasted_space_std_list.append(np.std(wasted))
+
+            # In addition, I also wanted to return a value to LLM
+            # such that it knows just how close we are, to reaching the goal.
+            nearly_full_threshold = 0.10 * capacity
+            # For example, if 10 out of 100 bins are at their 90% fullness,
+            # then the percentage is 10%.
+            pct_nearly_full_list.append(np.mean(wasted < nearly_full_threshold))
+
     # Minimize such value so that closer to 0 from a negative number
     # yields a better result
     avg_num_bins = np.mean(num_bins)
@@ -307,10 +355,18 @@ def evaluate(instances: dict) -> float:
     # Takes the average of fullness list (gathered from all instances)
     avg_fullness_overall = np.mean(avg_fullness_list) if avg_fullness_list else 0.0
 
-    print(f"[Evaluator Result] Average Number of bins used: {avg_num_bins}")
-    print(f"[Evaluator Result] Average fullness of closed bins: {avg_fullness_overall:.4f}")
+    avg_wasted_space = np.mean(avg_wasted_space_list) if avg_wasted_space_list else 0.0
+    wasted_space_std = np.mean(wasted_space_std_list) if wasted_space_std_list else 0.0
+    pct_nearly_full = np.mean(pct_nearly_full_list) if pct_nearly_full_list else 0.0
 
-    return [-avg_num_bins, avg_fullness_overall]
+    return {
+        'primary': -float(avg_num_bins),
+        'avg_bins_used': float(avg_num_bins),
+        'avg_fullness': float(avg_fullness_overall),
+        'avg_wasted_space': float(avg_wasted_space),
+        'wasted_space_std': float(wasted_space_std),
+        'pct_nearly_full': float(pct_nearly_full),
+    }
 
 @funsearch.evolve
 def priority(item: float, bins: np.ndarray) -> np.ndarray:
@@ -332,11 +388,12 @@ def priority(item: float, bins: np.ndarray) -> np.ndarray:
 # It should be noted that the if __name__ == '__main__' is required.
 # Because the inner code uses multiprocess evaluation.
 if __name__ == '__main__':
+
     class_config = config.ClassConfig(llm_class=LLMAPI, sandbox_class=Sandbox)
-    config = config.Config(samples_per_prompt=4, evaluate_timeout_seconds=30)
+    config = config.Config(samples_per_prompt=2, evaluate_timeout_seconds=30)
 
     bin_packing_or3 = {'OR3': bin_packing_utils.datasets['OR3']}
-    global_max_sample_num = None  # if it is set to None, funsearch will execute an endless loop
+    global_max_sample_num = 10  # if it is set to None, funsearch will execute an endless loop
     funsearch.main(
         specification=specification,
         inputs=bin_packing_or3,

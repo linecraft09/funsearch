@@ -12,4 +12,4 @@ flask-cors
 numba
 tensorboard
 tensorboardX
-
+python-dotenv
