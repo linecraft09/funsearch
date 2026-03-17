@@ -90,7 +90,7 @@ class LLMAPI(sampler.LLM):
             try:
                 conn = http.client.HTTPSConnection(host=os.getenv("ANALYST_LLM_ENDPOINT_HOST"), port=int(os.getenv("ANALYST_LLM_ENDPOINT_PORT")))
                 payload = json.dumps({
-                    "model": "qwen3-coder:30b",
+                    "model": "gemma3:12b-it-qat",
                     "stream": False,
                     "prompt": prompt,
                     "think": False,
@@ -393,7 +393,7 @@ if __name__ == '__main__':
     config = config.Config(samples_per_prompt=2, evaluate_timeout_seconds=30)
 
     bin_packing_or3 = {'OR3': bin_packing_utils.datasets['OR3']}
-    global_max_sample_num = 10  # if it is set to None, funsearch will execute an endless loop
+    global_max_sample_num = None  # if it is set to None, funsearch will execute an endless loop
     funsearch.main(
         specification=specification,
         inputs=bin_packing_or3,

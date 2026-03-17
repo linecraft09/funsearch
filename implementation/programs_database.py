@@ -361,8 +361,10 @@ class ProgramsDatabase:
         ]
 
         if 'avg_fullness' in current and 'avg_fullness' in best_in_window:
+            current_fullness_pct = current['avg_fullness'] * 100
+            best_fullness_pct = best_in_window['avg_fullness'] * 100
             feedback_lines.append(
-                f"# - Average bin fullness is {current['avg_fullness']:.4f * 100:.2f}%; recent best is {best_in_window['avg_fullness']:.4f * 100:.2f}%."
+                f"# - Average bin fullness is {current_fullness_pct:.2f}%; recent best is {best_fullness_pct:.2f}%."
             )
         else:
             feedback_lines.append('# - Fullness metric is unavailable in current score payload; optimize bin usage signal first.')
