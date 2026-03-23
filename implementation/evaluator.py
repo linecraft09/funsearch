@@ -194,9 +194,9 @@ class Evaluator:
             )
 
             if runs_ok and not _calls_ancestor(program, self._function_to_evolve) and test_output is not None:
-                if not isinstance(test_output, (int, float)):
+                if not isinstance(test_output, (int, float, dict)):
                     print(f'RZ=> Error: test_output is {test_output}')
-                    raise ValueError('@function.run did not return an int/float score.')
+                    raise ValueError('@function.run did not return an int/float/dict score.')
                 scores_per_test[current_input] = test_output
 
         evaluate_time = time.time() - time_reset

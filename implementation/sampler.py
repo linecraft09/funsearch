@@ -95,8 +95,13 @@ class Sampler:
                 break
             try:
                 prompt = self._database.get_prompt()
+                feedback = self._database.get_island_prompt_feedback(prompt.island_id)
+                prompt_for_llm = prompt.code
+                if feedback:
+                    # Keep code template intact while providing textual feedback context.
+                    prompt_for_llm = f'{feedback}\n\n{prompt.code}'
                 reset_time = time.time()
-                samples = self._llm.draw_samples(prompt.code)
+                samples = self._llm.draw_samples(prompt_for_llm)
                 sample_time = (time.time() - reset_time) / self._samples_per_prompt
                 # This loop can be executed in parallel on remote evaluator machines.
                 for sample in samples:
