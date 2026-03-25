@@ -289,6 +289,10 @@ class ProgramsDatabase:
     def get_island_prompt_feedback(self, island_id: int) -> str:
         """Returns concise natural-language feedback for the next prompt."""
         history = list(self._history_per_island[island_id])
+        best_scores_per_test = self._best_scores_per_test_per_island[island_id]
+        best_summary: dict[str, float] | None = None
+        if best_scores_per_test is not None:
+            best_summary = _summarize_scores(best_scores_per_test)
 
         # Starting phrase for all prompts.
         starting_phrase: str = """
@@ -305,7 +309,7 @@ class ProgramsDatabase:
         # The following instruction_phrase will only work for a single LLM instance.
         instruction_phrase: str = """
         Please elaborate and put comments over the code to explain how your heuristic function works.
-        However, do not output anything other than the code itself and the comments within in.
+        However, do not output anything other than the code itself and the comments within it.
         Strictly output the code of the heuristic function.
         """
 
@@ -323,6 +327,9 @@ class ProgramsDatabase:
         window = history[-8:]
         current = window[-1]
         best_in_window = max(window, key=lambda x: x['primary_score'])
+        # Anchor feedback to best recorded program metrics from ProgramDatabase.
+        # Fall back to window-best if best summary is not available.
+        best_reference = best_summary if best_summary is not None else best_in_window
 
         # Takes the middle index, later for use to determine
         # the first half (old_window) and the second half (new_window)
@@ -351,20 +358,20 @@ class ProgramsDatabase:
             advice_line = 'Recent changes hurt performance; prefer safer, less disruptive edits.'
 
         current_bins_used = current.get('avg_bins_used', -current['primary_score'])
-        best_bins_used = best_in_window.get('avg_bins_used', -best_in_window['primary_score'])
+        best_bins_used = best_reference.get('avg_bins_used', -best_reference['primary_score'])
 
         feedback_lines = [
             '# Evolution feedback from previous evaluated programs:',
             f"# - Island trend is {trend} (recent score delta {delta:+.3f}, higher is better).",
-            f"# - Current average bins used is about {current_bins_used:.3f}; recent best is {best_bins_used:.3f}. (We want to minimize this number)",
-            f"# - Current primary score is {current['primary_score']:.3f}; recent best is {best_in_window['primary_score']:.3f}. (We want to maximize this number)",
+            f"# - Current average bins used is about {current_bins_used:.3f}; island best is {best_bins_used:.3f}. (We want to minimize this number)",
+            f"# - Current primary score is {current['primary_score']:.3f}; island best is {best_reference['primary_score']:.3f}. (We want to maximize this number)",
         ]
 
-        if 'avg_fullness' in current and 'avg_fullness' in best_in_window:
+        if 'avg_fullness' in current and 'avg_fullness' in best_reference:
             current_fullness_pct = current['avg_fullness'] * 100
-            best_fullness_pct = best_in_window['avg_fullness'] * 100
+            best_fullness_pct = best_reference['avg_fullness'] * 100
             feedback_lines.append(
-                f"# - Average bin fullness is {current_fullness_pct:.2f}%; recent best is {best_fullness_pct:.2f}%."
+                f"# - Average bin fullness is {current_fullness_pct:.2f}%; island best is {best_fullness_pct:.2f}%."
             )
         else:
             feedback_lines.append('# - Fullness metric is unavailable in current score payload; optimize bin usage signal first.')
@@ -374,7 +381,7 @@ class ProgramsDatabase:
             wasted = current['avg_wasted_space']
             std = current.get('wasted_space_std', 0.0)
             pct_full = current.get('pct_nearly_full', 0.0)
-            best_wasted = best_in_window.get('avg_wasted_space', wasted)
+            best_wasted = best_reference.get('avg_wasted_space', wasted)
 
             if std < 10:
                 spread_desc = 'waste is consistent across bins'
@@ -391,9 +398,13 @@ class ProgramsDatabase:
                 tight_desc = f'only {pct_full*100:.0f}% of bins are nearly full — packing is loose, prioritize tighter fits'
 
             feedback_lines.append(
-                f"# - Wasted space per bin: avg {wasted:.2f} units (best in window {best_wasted:.2f}), std {std:.2f} — {spread_desc}."
+                f"# - Wasted space per bin: avg {wasted:.2f} units (island best {best_wasted:.2f}), std {std:.2f} — {spread_desc}."
             )
             feedback_lines.append(f'# - {tight_desc}.')
+
+        feedback_lines.append(
+            f"# - Recent-window best primary score is {best_in_window['primary_score']:.3f} (last {len(window)} samples)."
+        )
 
         sample_times = [s['sample_time'] for s in window if 'sample_time' in s]
         eval_times = [s['evaluate_time'] for s in window if 'evaluate_time' in s]
