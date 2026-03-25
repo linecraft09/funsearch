@@ -16,20 +16,23 @@
 """A programs database that implements the evolutionary algorithm."""
 from __future__ import annotations
 
-import profile
-from collections import deque
-from collections.abc import Mapping, Sequence
 import copy
 import dataclasses
 import time
+from collections import deque
+from collections.abc import Mapping, Sequence
 from typing import Any, Tuple
 
-from absl import logging
 import numpy as np
 import scipy
+from absl import logging
 
+import profile
 from implementation import code_manipulation
 from implementation import config as config_lib
+
+NO_HISTORY_FEEDBACK_STATEMENT = """Since this is the first iteration, no historical performances are available.
+            Please be creative and come up with a heuristic function to kick start this evolution."""
 
 # RZ: I change the original code "tuple[float, ...]" to "Tuple[float, ...]"
 Signature = Tuple[float, ...]
@@ -46,6 +49,8 @@ Adrian: Since the score provides more metrics, a function was developed
 to extract the correct score. For backwards compatibility, it will
 return the float value as is if it is not a dictionary.
 '''
+
+
 def _extract_primary_score(score_value: float | Mapping[str, Any]) -> float:
     if isinstance(score_value, Mapping):
         if 'primary' in score_value:
@@ -53,11 +58,14 @@ def _extract_primary_score(score_value: float | Mapping[str, Any]) -> float:
         return 0.0
     return float(score_value)
 
+
 '''
 Adrian: Following from the function above, this function was developed
 to extract the other metrics that were captured during the evaluation.
 The function takes in the metric_name, as defined in the the evalute function.
 '''
+
+
 def _extract_numeric_metric(score_value: float | Mapping[str, Any], metric_name: str) -> float | None:
     """Extracts a numeric metric from a score payload, if present."""
     if not isinstance(score_value, Mapping):
@@ -67,10 +75,13 @@ def _extract_numeric_metric(score_value: float | Mapping[str, Any], metric_name:
         return float(metric)
     return None
 
+
 '''
 Adrian: Function to summarize the scores/metrics gathered at each evaluation.
 This will be stored in the ProgramDatabase later for evaluation.
 '''
+
+
 def _summarize_scores(scores_per_test: ScoresPerTest) -> dict[str, float]:
     """Builds aggregate metrics over tests for prompt feedback."""
 
@@ -286,38 +297,16 @@ class ProgramsDatabase:
     This will provide narrative feedback to the LLM based on the historical performance of the island.
     This will then guide the LLM in generating the next heuristic, while factoring in the recent performance of the island.
     '''
+
     def get_island_prompt_feedback(self, island_id: int) -> str:
         """Returns concise natural-language feedback for the next prompt."""
         history = list(self._history_per_island[island_id])
-
-        # Starting phrase for all prompts.
-        starting_phrase: str = """
-        You are an Artificial Intelligence Heuritistic Expert.
-        You are tasked to work on improving the following heuristic function for the Online Bin Packing problem.
-        This heuristic function will determine how to pack items into bins in an online manner, and your goal is to minimize the number of bins used while maximizing the fullness of the bins.
-        The code blocks you are seeing is the previous version of the heuristic function.
-        As a heuristic expert, you are expected to analyze the previous version(s) of the heuristic function
-        and generate a more advanced and complex, yet accurate function that can achieve better performance.
-        """
-
-        # Return instruction
-        # Adrian: For testing only. This will change as we introduce the Analyst LLM and Programmer LLM.
-        # The following instruction_phrase will only work for a single LLM instance.
-        instruction_phrase: str = """
-        Please elaborate and put comments over the code to explain how your heuristic function works.
-        However, do not output anything other than the code itself and the comments within in.
-        Strictly output the code of the heuristic function.
-        """
-
         # Going to return an empty feedback as the island is still very early in its evolution
         # Historical figures will only make sense after at least 2 evolutions.
         if len(history) < 2:
             # There is not enough historical figures to generate a meaningful narrative feedback.
             # I will just return a simple instruction telling it to be creative for the first evolution.
-            return starting_phrase + """
-                Since this is the first iteration, no historical performances are available.
-                Please be creative and come up with a heuristic function to kick start this evolution.
-            """ + instruction_phrase
+            return NO_HISTORY_FEEDBACK_STATEMENT
 
         # Trend evaluation based on the last 8 historical figures.
         window = history[-8:]
@@ -332,7 +321,7 @@ class ProgramsDatabase:
 
         old_mean = sum(s['primary_score'] for s in old_window) / len(old_window)
         new_mean = sum(s['primary_score'] for s in new_window) / len(new_window)
-        
+
         # Compares the old and the new mean with a delta value
         # Essentially this will tell LLM whether the performance is degrading or improving.
         delta = new_mean - old_mean
@@ -367,7 +356,8 @@ class ProgramsDatabase:
                 f"# - Average bin fullness is {current_fullness_pct:.2f}%; recent best is {best_fullness_pct:.2f}%."
             )
         else:
-            feedback_lines.append('# - Fullness metric is unavailable in current score payload; optimize bin usage signal first.')
+            feedback_lines.append(
+                '# - Fullness metric is unavailable in current score payload; optimize bin usage signal first.')
 
         # Wasted space distribution
         if 'avg_wasted_space' in current:
@@ -384,11 +374,11 @@ class ProgramsDatabase:
                 spread_desc = 'waste is highly uneven — some bins are nearly full, others are sparse'
 
             if pct_full > 0.6:
-                tight_desc = f'{pct_full*100:.0f}% of bins are nearly full (under 10% capacity remaining) — good tightness'
+                tight_desc = f'{pct_full * 100:.0f}% of bins are nearly full (under 10% capacity remaining) — good tightness'
             elif pct_full > 0.3:
-                tight_desc = f'only {pct_full*100:.0f}% of bins are nearly full — room to improve packing density'
+                tight_desc = f'only {pct_full * 100:.0f}% of bins are nearly full — room to improve packing density'
             else:
-                tight_desc = f'only {pct_full*100:.0f}% of bins are nearly full — packing is loose, prioritize tighter fits'
+                tight_desc = f'only {pct_full * 100:.0f}% of bins are nearly full — packing is loose, prioritize tighter fits'
 
             feedback_lines.append(
                 f"# - Wasted space per bin: avg {wasted:.2f} units (best in window {best_wasted:.2f}), std {std:.2f} — {spread_desc}."
@@ -399,11 +389,11 @@ class ProgramsDatabase:
         eval_times = [s['evaluate_time'] for s in window if 'evaluate_time' in s]
         if sample_times and eval_times:
             feedback_lines.append(
-                f"# - Average sample/evaluate time in this window: {sum(sample_times)/len(sample_times):.3f}s / {sum(eval_times)/len(eval_times):.3f}s."
+                f"# - Average sample/evaluate time in this window: {sum(sample_times) / len(sample_times):.3f}s / {sum(eval_times) / len(eval_times):.3f}s."
             )
 
         feedback_lines.append(f'# - Guidance: {advice_line}')
-        return starting_phrase + '\n'.join(feedback_lines) + instruction_phrase
+        return '\n'.join(feedback_lines)
 
     def reset_islands(self) -> None:
         """Resets the weaker half of islands."""

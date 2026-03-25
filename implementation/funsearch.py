@@ -16,8 +16,6 @@
 """A single-threaded implementation of the FunSearch pipeline."""
 from __future__ import annotations
 
-# from collections.abc import Sequence
-
 # RZ: there are multiple errors in the original code
 # we should use typing.xxx rather than collections.abc.xxx
 from typing import Any, Tuple, Sequence
@@ -25,9 +23,11 @@ from typing import Any, Tuple, Sequence
 from implementation import code_manipulation
 from implementation import config as config_lib
 from implementation import evaluator
-from implementation import programs_database
-from implementation import sampler
 from implementation import profile
+from implementation import programs_database
+
+
+# from collections.abc import Sequence
 
 
 def _extract_function_names(specification: str) -> Tuple[str, str]:
@@ -92,8 +92,10 @@ def main(
     evaluators[0].analyse(initial, island_id=None, version_generated=None, profiler=profiler)
 
     # Set global max sample nums.
-    samplers = [sampler.Sampler(database, evaluators, config.samples_per_prompt, max_sample_nums=max_sample_nums, llm_class=class_config.llm_class)
-                for _ in range(config.num_samplers)]
+    samplers = [
+        class_config.sampler_class(database, evaluators, config.samples_per_prompt, max_sample_nums=max_sample_nums,
+                                   llm_class=class_config.llm_class)
+        for _ in range(config.num_samplers)]
 
     # This loop can be executed in parallel on remote sampler machines. As each
     # sampler enters an infinite loop, without parallelization only the first

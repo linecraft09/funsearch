@@ -19,8 +19,8 @@ from __future__ import annotations
 import dataclasses
 from typing import Type
 
-from implementation import sampler
 from implementation import evaluator
+from implementation import sampler
 
 
 @dataclasses.dataclass(frozen=True)
@@ -72,3 +72,4 @@ class ClassConfig:
     """
     llm_class: Type[sampler.LLM]
     sandbox_class: Type[evaluator.Sandbox]
+    sampler_class: Type[sampler.Sampler]

@@ -1,29 +1,23 @@
-import json
 import multiprocessing
 import os
-
-from dotenv import load_dotenv
-from datetime import datetime
-from typing import Collection, Any
-import http.client
 import time
-import os
+from datetime import datetime
+from typing import Collection, Any, Sequence, Type
+
 import requests
-from implementation import funsearch
-from implementation import config
-from implementation import sampler
-from implementation import evaluator_accelerate
-from implementation import evaluator
-from implementation import code_manipulation
+from dotenv import load_dotenv
+
 import bin_packing_utils
-
-import json
-import multiprocessing
-from typing import Collection, Any
-import http.client
+from implementation import code_manipulation, programs_database
+from implementation import config
+from implementation import evaluator
+from implementation import evaluator_accelerate
+from implementation import funsearch
 from implementation import sampler
+from implementation.programs_database import Prompt
 
-load_dotenv()
+load_dotenv('api_key.env')
+
 
 def _trim_preface_of_body(sample: str) -> str:
     """Trim the redundant descriptions/symbols/'def' declaration before the function body.
@@ -62,16 +56,37 @@ def _trim_preface_of_body(sample: str) -> str:
     return sample
 
 
+class Constant:
+    ANALYSE_LLM_PROMPT_PREFIX: str = """You are an Artificial Intelligence Heuritistic Expert.
+    You are tasked to work on improving the following heuristic function for the Online Bin Packing problem.
+    This heuristic function will determine how to pack items into bins in an online manner, and your goal is to minimize the number of bins used while maximizing the fullness of the bins.
+    The code blocks you are seeing is the previous version of the heuristic function.
+    The subsequent supplementary information includes evaluation metrics and preliminary recommendations for online binpacking testing.
+    As a heuristic expert, you are expected to analyze the previous version(s) of the heuristic function with the feedbacks
+    and do some preliminary work:
+    First, analyze the program itself, explore a reasonable explanation for why this version shows such results in the tests, and think deeply about how to improve it.
+    Please do not output any other code implementations or your thinking process.
+    Please use natural language to output only correct and accurate code modification suggestions that are unrelated to the original problem and only pertain to the code level."""
+
+    PROGRAM_LLM_PROMPT_PREFIX: str = """
+    Please improve this code snippet according to the following instructions.
+    Do not output anything other than the code itself and the comments within in.
+    Strictly output the code of the heuristic function.
+    """
+
+
 class LLMAPI(sampler.LLM):
     """Language model that predicts continuation of provided source code.
     """
 
-    def __init__(self, samples_per_prompt: int, trim=True):
+    def __init__(self, samples_per_prompt: int, trim=True, type: int = 0):
         super().__init__(samples_per_prompt)
         # Adrian: The additional prompt has been taken away since the ProgramDatabase will deliver
         # the narrative feedback.
         self._additional_prompt = ""
         self._trim = trim
+        # type=0 refer to analyse, otherwise, program.
+        self._type = type
         # Create a per-run log file in the same directory as this script.
         # Filename format: YYYYMMDD-HHiiss.txt. Open/appends will be used
         # when writing prompts/responses.
@@ -91,13 +106,15 @@ class LLMAPI(sampler.LLM):
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
-                url = "https://router.huggingface.co/v1/chat/completions"
-                hf_token = os.environ.get('HF_TOKEN') or 'token here'
-                hf_model = os.environ.get('HF_MODEL') or 'meta-llama/Llama-3.3-70B-Instruct'
+                url = os.environ.get('PROGRAMMER_LLM_ENDPOINT_HOST' if self._type else 'ANALYST_LLM_ENDPOINT_HOST')
+                token = os.environ.get('PROGRAMMER_LLM_API_KEY' if self._type else 'ANALYST_LLM_API_KEY')
+                model = os.environ.get(
+                    'PROGRAMMER_LLM_ENDPOINT_MODEL' if self._type else 'ANALYST_LLM_ENDPOINT_MODEL')
 
                 payload = {
-                    "max_tokens": 512,
-                    "model": hf_model,
+                    "max_tokens": 4096,
+                    "model": model,
+                    "reasoning_effort": "low",
                     "messages": [
                         {
                             "role": "user",
@@ -106,12 +123,12 @@ class LLMAPI(sampler.LLM):
                     ]
                 }
                 headers = {
-                    'Authorization': f'Bearer {hf_token}',
+                    'Authorization': f'Bearer {token}',
                     'User-Agent': 'Apifox/1.0.0 (https://apifox.com)',
                     'Content-Type': 'application/json'
                 }
 
-                resp = requests.post(url, headers=headers, json=payload, timeout=30)
+                resp = requests.post(url, headers=headers, json=payload, timeout=300)
                 try:
                     resp.raise_for_status()
                 except requests.HTTPError:
@@ -120,7 +137,6 @@ class LLMAPI(sampler.LLM):
                     raise
                 data = resp.json()
                 response = data['choices'][0]['message']['content']
-
                 # trim function
                 if self._trim:
                     response = _trim_preface_of_body(response)
@@ -145,6 +161,38 @@ class LLMAPI(sampler.LLM):
                     # Stop retrying and raise so upstream can handle the failure.
                     raise RuntimeError(f"LLMAPI._draw_sample failed after {max_attempts} attempts") from e
                 time.sleep(2)
+
+
+class ThoughtAugmentedSampler(sampler.Sampler):
+    def __init__(self,
+                 database: programs_database.ProgramsDatabase,
+                 evaluators: Sequence[evaluator.Evaluator],
+                 samples_per_prompt: int,
+                 max_sample_nums: int | None = None,
+                 llm_class: Type[LLMAPI] = LLMAPI):
+        super().__init__(database, evaluators, samples_per_prompt, max_sample_nums, llm_class)
+        self._analyse_llm = llm_class(samples_per_prompt, trim=False, type=0)
+        self._program_llm = llm_class(samples_per_prompt, type=1)
+
+    def sample_from_llm(self, prompt: Prompt) -> tuple[float, Collection[str]]:
+        feedback_lines = self._database.get_island_prompt_feedback(prompt.island_id)
+        # Keep code template intact while providing textual feedback context.
+        prompt_for_analyse_llm = f'{Constant.ANALYSE_LLM_PROMPT_PREFIX}\n\n{prompt.code}\n\n{feedback_lines}'
+        reset_time = time.time()
+        analysed_samples = self._analyse_llm.draw_samples(prompt_for_analyse_llm)
+        analyse_time = time.time() - reset_time
+        samples = []
+        program_time = 0
+        for analysed_sample in analysed_samples:
+            if not analysed_sample:
+                continue
+            prompt_for_program_llm = f'{Constant.PROGRAM_LLM_PROMPT_PREFIX}\n\n{analysed_sample}\n\n{prompt.code}'
+            reset_time = time.time()
+            sample = self._program_llm.draw_samples(prompt_for_program_llm)
+            program_time = program_time + (time.time() - reset_time)
+            samples.extend(sample)
+        sample_time = (analyse_time + program_time) / self._samples_per_prompt
+        return sample_time, samples
 
 
 class Sandbox(evaluator.Sandbox):
@@ -411,8 +459,7 @@ def priority(item: float, bins: np.ndarray) -> np.ndarray:
 # It should be noted that the if __name__ == '__main__' is required.
 # Because the inner code uses multiprocess evaluation.
 if __name__ == '__main__':
-
-    class_config = config.ClassConfig(llm_class=LLMAPI, sandbox_class=Sandbox)
+    class_config = config.ClassConfig(llm_class=LLMAPI, sandbox_class=Sandbox, sampler_class=ThoughtAugmentedSampler)
     config = config.Config(samples_per_prompt=2, evaluate_timeout_seconds=30)
 
     bin_packing_or3 = {'OR3': bin_packing_utils.datasets['OR3']}

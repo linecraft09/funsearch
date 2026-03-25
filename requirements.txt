@@ -13,3 +13,4 @@ numba
 tensorboard
 tensorboardX
 python-dotenv
+requests

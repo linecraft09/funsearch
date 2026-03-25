@@ -15,11 +15,12 @@
 
 """Class for sampling new programs."""
 from __future__ import annotations
-from abc import ABC, abstractmethod
 
-from typing import Collection, Sequence, Type
-import numpy as np
 import time
+from abc import ABC, abstractmethod
+from typing import Collection, Sequence, Type
+
+import numpy as np
 
 from implementation import evaluator
 from implementation import programs_database
@@ -95,14 +96,7 @@ class Sampler:
                 break
             try:
                 prompt = self._database.get_prompt()
-                feedback = self._database.get_island_prompt_feedback(prompt.island_id)
-                prompt_for_llm = prompt.code
-                if feedback:
-                    # Keep code template intact while providing textual feedback context.
-                    prompt_for_llm = f'{feedback}\n\n{prompt.code}'
-                reset_time = time.time()
-                samples = self._llm.draw_samples(prompt_for_llm)
-                sample_time = (time.time() - reset_time) / self._samples_per_prompt
+                sample_time, samples = self.sample_from_llm(prompt)
                 # This loop can be executed in parallel on remote evaluator machines.
                 for sample in samples:
                     self._global_sample_nums_plus_one()  # RZ: add _global_sample_nums
@@ -122,6 +116,17 @@ class Sampler:
                 # the failure is visible and can be handled by the caller/user.
                 print(f"Sampler.exception: {e}")
                 raise
+
+    def sample_from_llm(self, prompt: programs_database.Prompt) -> tuple[float, Collection[str]]:
+        feedback = self._database.get_island_prompt_feedback(prompt.island_id)
+        prompt_for_llm = prompt.code
+        if feedback:
+            # Keep code template intact while providing textual feedback context.
+            prompt_for_llm = f'{feedback}\n\n{prompt.code}'
+        reset_time = time.time()
+        samples = self._llm.draw_samples(prompt_for_llm)
+        sample_time = (time.time() - reset_time) / self._samples_per_prompt
+        return sample_time, samples
 
     def _get_global_sample_nums(self) -> int:
         return self.__class__._global_samples_nums
