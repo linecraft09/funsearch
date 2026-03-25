@@ -47,6 +47,7 @@ class Profiler:
         self._each_sample_evaluate_failed_program_num = []
         self._each_sample_tot_sample_time = []
         self._each_sample_tot_evaluate_time = []
+        self._current_metrics_summary: dict[str, float] = {}
 
     def _write_tensorboard(self):
         if not self._log_dir:
@@ -71,6 +72,13 @@ class Profiler:
             global_step=self._num_samples
         )
 
+        if self._current_metrics_summary:
+            self._writer.add_scalars(
+                'Evaluation Metrics',
+                self._current_metrics_summary,
+                global_step=self._num_samples
+            )
+
     def _write_json(self, programs: code_manipulation.Function):
         sample_order = programs.global_sample_nums
         sample_order = sample_order if sample_order is not None else 0
@@ -79,7 +87,8 @@ class Profiler:
         content = {
             'sample_order': sample_order,
             'function': function_str,
-            'score': score
+            'score': score,
+            'metrics_summary': dict(programs.metrics_summary or {})
         }
         path = os.path.join(self._json_dir, f'samples_{sample_order}.json')
         with open(path, 'w') as json_file:
@@ -105,6 +114,7 @@ class Profiler:
         sample_time = function.sample_time
         evaluate_time = function.evaluate_time
         score = function.score
+        metrics_summary = function.metrics_summary or {}
         # log attributes of the function
         print(f'================= Evaluated Function =================')
         print(f'{function_str}')
@@ -121,7 +131,7 @@ class Profiler:
             self._cur_best_program_sample_order = sample_orders
 
         # update statistics about function
-        if score:
+        if score is not None:
             self._evaluate_success_program_num += 1
         else:
             self._evaluate_failed_program_num += 1
@@ -130,6 +140,13 @@ class Profiler:
             self._tot_sample_time += sample_time
         if evaluate_time:
             self._tot_evaluate_time += evaluate_time
+
+        # Keep current evaluation metrics for TensorBoard step-level logging.
+        self._current_metrics_summary = {
+            key: float(value)
+            for key, value in metrics_summary.items()
+            if isinstance(value, (int, float))
+        }
 
         # update ...
         # self._each_sample_best_program_score.append(self._cur_best_program_score)

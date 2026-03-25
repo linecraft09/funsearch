@@ -46,10 +46,11 @@ class Function:
     body: str
     return_type: str | None = None
     docstring: str | None = None
-    score: int | None = None  # RZ: add this to record the score of the function.
+    score: float | None = None  # RZ: add this to record the score of the function.
     global_sample_nums: int | None = None  # RZ: record the order of the current program in the sequence of samples taken.
     sample_time: float | None = None  # RZ: add this
     evaluate_time: float | None = None  # RZ: add this
+    metrics_summary: dict[str, float] | None = None  # Aggregated metrics returned by evaluate().
 
     def __str__(self) -> str:
         return_type = f' -> {self.return_type}' if self.return_type else ''

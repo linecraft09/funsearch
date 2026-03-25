@@ -267,6 +267,7 @@ class ProgramsDatabase:
             program.global_sample_nums = global_sample_nums
             program.sample_time = sample_time
             program.evaluate_time = evaluate_time
+            program.metrics_summary = dict(summary)
             profiler.register_function(program)
 
     def register_program(
