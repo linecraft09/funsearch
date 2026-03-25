@@ -16,7 +16,7 @@ from implementation import funsearch
 from implementation import sampler
 from implementation.programs_database import Prompt
 
-load_dotenv('api_key.env')
+load_dotenv()
 
 
 def _trim_preface_of_body(sample: str) -> str:
@@ -57,7 +57,7 @@ def _trim_preface_of_body(sample: str) -> str:
 
 
 class Constant:
-    ANALYSE_LLM_PROMPT_PREFIX: str = """You are an Artificial Intelligence Heuritistic Expert.
+    ANALYSE_LLM_PROMPT_PREFIX: str = """You are an Artificial Intelligence Heuristic Expert.
     You are tasked to work on improving the following heuristic function for the Online Bin Packing problem.
     This heuristic function will determine how to pack items into bins in an online manner, and your goal is to minimize the number of bins used while maximizing the fullness of the bins.
     The code blocks you are seeing is the previous version of the heuristic function.
@@ -70,7 +70,7 @@ class Constant:
 
     PROGRAM_LLM_PROMPT_PREFIX: str = """
     Please improve this code snippet according to the following instructions.
-    Do not output anything other than the code itself and the comments within in.
+    Do not output anything other than the code itself and the comments within it.
     Strictly output the code of the heuristic function.
     """
 
